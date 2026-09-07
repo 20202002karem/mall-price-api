@@ -47,19 +47,52 @@ class ProductController extends Controller
         return ProductResource::collection($products);
     }
 
+    // public function show(Product $product)
+    // {
+    //     abort_if(!$product->is_active, 404);
+
+    //     $product->load('category');
+
+    //     abort_if(!$product->category || !$product->category->is_active, 404);
+
+    //     $product->load('currentPrice');
+
+    //     return new ProductResource($product);
+    // }
+
     public function show(Product $product)
-    {
-        abort_if(!$product->is_active, 404);
+{
+    $start = microtime(true);
 
-        $product->load('category');
+    abort_if(!$product->is_active, 404);
 
-        abort_if(!$product->category || !$product->category->is_active, 404);
+    $product->load('category');
 
-        $product->load('currentPrice');
+    $afterCategory = microtime(true);
 
-        return new ProductResource($product);
-    }
+    abort_if(
+        !$product->category || !$product->category->is_active,
+        404
+    );
 
+    $product->load('currentPrice');
+
+    $afterPrice = microtime(true);
+
+    $resource = new ProductResource($product);
+
+    $afterResource = microtime(true);
+
+    \Log::info('PRODUCT SHOW TIMING', [
+        'product_id' => $product->id,
+        'category_seconds' => $afterCategory - $start,
+        'current_price_seconds' => $afterPrice - $afterCategory,
+        'resource_seconds' => $afterResource - $afterPrice,
+        'total_seconds' => $afterResource - $start,
+    ]);
+
+    return $resource;
+}
         public function byBarcode(string $barcode)
     {
         $product = Product::query()

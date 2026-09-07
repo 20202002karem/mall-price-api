@@ -10,9 +10,13 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Support\Facades\Log;
-
+use App\Services\FirebaseNotificationService;
 class PriceService
 {
+    public function __construct(
+    protected FirebaseNotificationService $notificationService
+    ) {
+    }
     public function getCurrentPrice(Product $product): ?Price
     {
         return $product->prices()->current()->first();
@@ -24,181 +28,264 @@ class PriceService
     }
 
 
-public function createPrice(Product $product, array $data, ?User $admin): Price
-{
-    if (!$product->is_active) {
-        throw ValidationException::withMessages([
-            'product' => 'Cannot create a price for an inactive product.',
-        ]);
-    }
+    // public function createPrice(Product $product, array $data, ?User $admin): Price
+    // {
+    //     if (!$product->is_active) {
+    //         throw ValidationException::withMessages([
+    //             'product' => 'Cannot create a price for an inactive product.',
+    //         ]);
+    //     }
 
-    $effectiveFrom = Carbon::parse($data['effective_from']);
+    //     $effectiveFrom = Carbon::parse($data['effective_from']);
 
-    $effectiveUntil = !empty($data['effective_until'])
-        ? Carbon::parse($data['effective_until'])
-        : null;
+    //     $effectiveUntil = !empty($data['effective_until'])
+    //         ? Carbon::parse($data['effective_until'])
+    //         : null;
 
-    // التأكد من صحة الفترة
-    $this->assertValidPeriod($effectiveFrom, $effectiveUntil);
+    //     // التأكد من صحة الفترة
+    //     $this->assertValidPeriod($effectiveFrom, $effectiveUntil);
 
-    $wasNewPrice = false;
+    //     $wasNewPrice = false;
 
-    $price = DB::transaction(function () use (
-        $product,
-        $data,
-        $admin,
-        $effectiveFrom,
-        $effectiveUntil,
-        &$wasNewPrice
-    ) {
-        /*
-         * السعر الحالي المفتوح فقط:
-         *
-         * effective_from <= الآن
-         * effective_until = NULL
-         *
-         * هذا هو السعر الذي يسمح النظام باستبداله
-         * تلقائيًا عند إنشاء سعر جديد الآن أو مستقبلًا.
-         */
-        $currentOpenPrice = $product->prices()
-            ->whereNull('effective_until')
-            ->where('effective_from', '<=', now())
-            ->orderByDesc('effective_from')
-            ->first();
+    //     $price = DB::transaction(function () use (
+    //         $product,
+    //         $data,
+    //         $admin,
+    //         $effectiveFrom,
+    //         $effectiveUntil,
+    //         &$wasNewPrice
+    //     ) {
+    //         /*
+    //         * السعر الحالي المفتوح فقط:
+    //         *
+    //         * effective_from <= الآن
+    //         * effective_until = NULL
+    //         *
+    //         * هذا هو السعر الذي يسمح النظام باستبداله
+    //         * تلقائيًا عند إنشاء سعر جديد الآن أو مستقبلًا.
+    //         */
+    //         $currentOpenPrice = $product->prices()
+    //             ->whereNull('effective_until')
+    //             ->where('effective_from', '<=', now())
+    //             ->orderByDesc('effective_from')
+    //             ->first();
 
-        /*
-         * إذا لم يوجد سعر حالي مفتوح فهذا يعتبر إنشاء
-         * أول سعر/سعر جديد مستقل.
-         */
-        $wasNewPrice = $currentOpenPrice === null;
+    //         /*
+    //         * إذا لم يوجد سعر حالي مفتوح فهذا يعتبر إنشاء
+    //         * أول سعر/سعر جديد مستقل.
+    //         */
+    //         $wasNewPrice = $currentOpenPrice === null;
 
-        /*
-         * إذا كان السعر الجديد يبدأ الآن أو في المستقبل،
-         * يمكن إغلاق السعر الحالي المفتوح تلقائيًا.
-         *
-         * أما إذا كان السعر الجديد في الماضي فلا نغلق
-         * السعر الحالي لأن هذا سيؤدي إلى تداخل تاريخي.
-         */
-        $canReplaceCurrentPrice =
-            $currentOpenPrice !== null &&
-            $effectiveFrom->gte(now());
+    //         /*
+    //         * إذا كان السعر الجديد يبدأ الآن أو في المستقبل،
+    //         * يمكن إغلاق السعر الحالي المفتوح تلقائيًا.
+    //         *
+    //         * أما إذا كان السعر الجديد في الماضي فلا نغلق
+    //         * السعر الحالي لأن هذا سيؤدي إلى تداخل تاريخي.
+    //         */
+    //         $canReplaceCurrentPrice =
+    //             $currentOpenPrice !== null &&
+    //             $effectiveFrom->gte(now());
 
-        /*
-         * افحص التداخل.
-         *
-         * إذا كان لدينا سعر حالي سيتم استبداله،
-         * نستثنيه من فحص التداخل لأنه ليس تعارضًا حقيقيًا:
-         *
-         * old: 2026-08-16 -> ∞
-         * new: 2026-09-16 -> ∞
-         *
-         * القديم سيصبح:
-         * 2026-08-16 -> 2026-09-16
-         */
-        $conflict = $this->findOverlap(
-            $product,
-            $effectiveFrom,
-            $effectiveUntil,
-            $canReplaceCurrentPrice
-                ? $currentOpenPrice->id
-                : null
-        );
+    //         /*
+    //         * افحص التداخل.
+    //         *
+    //         * إذا كان لدينا سعر حالي سيتم استبداله،
+    //         * نستثنيه من فحص التداخل لأنه ليس تعارضًا حقيقيًا:
+    //         *
+    //         * old: 2026-08-16 -> ∞
+    //         * new: 2026-09-16 -> ∞
+    //         *
+    //         * القديم سيصبح:
+    //         * 2026-08-16 -> 2026-09-16
+    //         */
+    //         $conflict = $this->findOverlap(
+    //             $product,
+    //             $effectiveFrom,
+    //             $effectiveUntil,
+    //             $canReplaceCurrentPrice
+    //                 ? $currentOpenPrice->id
+    //                 : null
+    //         );
 
-        if ($conflict) {
+    //         if ($conflict) {
+    //             throw ValidationException::withMessages([
+    //                 'effective_from' =>
+    //                     'The price period overlaps with an existing price period.',
+    //             ]);
+    //         }
+
+    //         /*
+    //         * بعد نجاح فحص التداخل فقط نغلق السعر الحالي.
+    //         *
+    //         * مهم:
+    //         * هذا داخل Transaction، لذلك إذا حدث أي خطأ بعد ذلك
+    //         * سيتم Rollback ولن يبقى السعر القديم مغلقًا.
+    //         */
+    //         if ($canReplaceCurrentPrice) {
+    //             $oldValues = [
+    //                 'effective_until' => optional(
+    //                     $currentOpenPrice->effective_until
+    //                 )->toDateTimeString(),
+    //             ];
+
+    //             $currentOpenPrice->effective_until = $effectiveFrom;
+    //             $currentOpenPrice->save();
+
+    //             $this->logAudit(
+    //                 $admin,
+    //                 'price_replaced',
+    //                 $currentOpenPrice,
+    //                 $oldValues,
+    //                 [
+    //                     'effective_until' =>
+    //                         $effectiveFrom->toDateTimeString(),
+    //                 ]
+    //             );
+    //         }
+
+    //         /*
+    //         * إنشاء السعر الجديد.
+    //         */
+    //         $price = Price::create([
+    //             'product_id' => $product->id,
+    //             'price' => $data['price'],
+    //             'old_price' => $canReplaceCurrentPrice
+    //                 ? $currentOpenPrice->price
+    //                 : null,
+    //             'discount' => $data['discount'] ?? null,
+    //             'currency' => $data['currency'] ?? 'ILS',
+    //             'effective_from' => $effectiveFrom,
+    //             'effective_until' => $effectiveUntil,
+    //             'updated_by' => $admin?->id,
+    //         ]);
+
+    //         /*
+    //         * تسجيل عملية إنشاء السعر.
+    //         */
+    //         $this->logAudit(
+    //             $admin,
+    //             'price_created',
+    //             $price,
+    //             null,
+    //             $price->only([
+    //                 'product_id',
+    //                 'price',
+    //                 'old_price',
+    //                 'discount',
+    //                 'currency',
+    //                 'effective_from',
+    //                 'effective_until',
+    //             ])
+    //         );
+
+    //         return $price;
+    //     });
+
+    //     /*
+    //     * Notification بعد نجاح الـ Transaction بالكامل.
+    //     */
+    //     try {
+    //         $this->notificationService->sendPriceUpdate(
+    //             $product->name,
+    //             $product->id,
+    //             $wasNewPrice
+    //         );
+    //     } catch (\Throwable $e) {
+    //         Log::warning(
+    //             'Notification dispatch failed after successful price creation',
+    //             [
+    //                 'product_id' => $product->id,
+    //                 'error' => $e->getMessage(),
+    //             ]
+    //         );
+    //     }
+
+    //     return $price;
+    // }
+    public function createPrice(Product $product, array $data, ?User $admin): Price
+    {
+        if (!$product->is_active) {
             throw ValidationException::withMessages([
-                'effective_from' =>
-                    'The price period overlaps with an existing price period.',
+                'product' => 'Cannot create a price for an inactive product.',
             ]);
         }
 
-        /*
-         * بعد نجاح فحص التداخل فقط نغلق السعر الحالي.
-         *
-         * مهم:
-         * هذا داخل Transaction، لذلك إذا حدث أي خطأ بعد ذلك
-         * سيتم Rollback ولن يبقى السعر القديم مغلقًا.
-         */
-        if ($canReplaceCurrentPrice) {
-            $oldValues = [
-                'effective_until' => optional(
-                    $currentOpenPrice->effective_until
-                )->toDateTimeString(),
-            ];
+        $effectiveFrom = Carbon::parse($data['effective_from']);
+        $effectiveUntil = !empty($data['effective_until']) ? Carbon::parse($data['effective_until']) : null;
 
-            $currentOpenPrice->effective_until = $effectiveFrom;
-            $currentOpenPrice->save();
+        $this->assertValidPeriod($effectiveFrom, $effectiveUntil);
 
-            $this->logAudit(
-                $admin,
-                'price_replaced',
-                $currentOpenPrice,
-                $oldValues,
-                [
-                    'effective_until' =>
-                        $effectiveFrom->toDateTimeString(),
-                ]
-            );
-        }
+        $wasNewPrice = false;
 
-        /*
-         * إنشاء السعر الجديد.
-         */
-        $price = Price::create([
-            'product_id' => $product->id,
-            'price' => $data['price'],
-            'old_price' => $canReplaceCurrentPrice
-                ? $currentOpenPrice->price
-                : null,
-            'discount' => $data['discount'] ?? null,
-            'currency' => $data['currency'] ?? 'ILS',
-            'effective_from' => $effectiveFrom,
-            'effective_until' => $effectiveUntil,
-            'updated_by' => $admin?->id,
-        ]);
-
-        /*
-         * تسجيل عملية إنشاء السعر.
-         */
-        $this->logAudit(
+        $price = DB::transaction(function () use (
+            $product,
+            $data,
             $admin,
-            'price_created',
-            $price,
-            null,
-            $price->only([
-                'product_id',
-                'price',
-                'old_price',
-                'discount',
-                'currency',
-                'effective_from',
-                'effective_until',
-            ])
-        );
+            $effectiveFrom,
+            $effectiveUntil,
+            &$wasNewPrice
+        ) {
+            $openPrice = $product->prices()
+                ->whereNull('effective_until')
+                ->where('effective_from', '<=', $effectiveFrom)
+                ->orderByDesc('effective_from')
+                ->first();
 
-        return $price;
-    });
+            $wasNewPrice = $openPrice === null;
 
-    /*
-     * Notification بعد نجاح الـ Transaction بالكامل.
-     */
-    try {
-        $this->notificationService->sendPriceUpdate(
-            $product->name,
-            $product->id,
-            $wasNewPrice
-        );
-    } catch (\Throwable $e) {
-        Log::warning(
-            'Notification dispatch failed after successful price creation',
-            [
+            if ($openPrice) {
+                $oldValues = ['effective_until' => optional($openPrice->effective_until)->toDateTimeString()];
+
+                $openPrice->effective_until = $effectiveFrom;
+                $openPrice->save();
+
+                $this->logAudit($admin, 'price_replaced', $openPrice, $oldValues, [
+                    'effective_until' => $effectiveFrom->toDateTimeString(),
+                ]);
+            }
+
+            $conflict = $this->findOverlap($product, $effectiveFrom, $effectiveUntil, $openPrice?->id);
+
+            if ($conflict) {
+                throw ValidationException::withMessages([
+                    'effective_from' => 'The price period overlaps with an existing price period.',
+                ]);
+            }
+
+            $price = Price::create([
+                'product_id' => $product->id,
+                'price' => $data['price'],
+                'old_price' => $openPrice?->price,
+                'discount' => $data['discount'] ?? null,
+                'currency' => $data['currency'] ?? 'ILS',
+                'effective_from' => $effectiveFrom,
+                'effective_until' => $effectiveUntil,
+                'updated_by' => $admin?->id,
+            ]);
+
+            $this->logAudit($admin, 'price_created', $price, null, $price->only([
+                'product_id', 'price', 'old_price', 'discount', 'currency',
+                'effective_from', 'effective_until',
+            ]));
+
+            return $price;
+        });
+
+        // Notification فقط بعد نجاح الـ Transaction بالكامل (Commit تم فعليًا)
+        try {
+            $this->notificationService->sendPriceUpdate($product->name, $product->id, $wasNewPrice);
+        } catch (\Throwable $e) {
+            Log::warning('Notification dispatch failed after successful price creation', [
                 'product_id' => $product->id,
                 'error' => $e->getMessage(),
-            ]
-        );
+            ]);
+        }
+
+        return $price;
     }
 
-    return $price;
-}
+
     public function updatePrice(Product $product, Price $price, array $data, ?User $admin): Price
     {
         $this->assertPriceBelongsToProduct($product, $price);
@@ -286,53 +373,53 @@ public function createPrice(Product $product, array $data, ?User $admin): Price
     Carbon $newStart,
     ?Carbon $newEnd,
     ?int $excludePriceId = null
-): ?Price {
-    return $product->prices()
-        /*
-         * في حالة استبدال السعر الحالي فقط،
-         * نستثني ذلك السعر من فحص التداخل.
-         */
-        ->when(
-            $excludePriceId !== null,
-            fn ($q) => $q->where('id', '!=', $excludePriceId)
-        )
-
-        /*
-         * شرط:
-         *
-         * existing.start < new.end
-         *
-         * إذا كانت newEnd = NULL فهذا يعني ∞،
-         * وبالتالي لا نحتاج لهذا الشرط.
-         */
-        ->when(
-            $newEnd !== null,
-            fn ($q) => $q->where(
-                'effective_from',
-                '<',
-                $newEnd
+    ): ?Price {
+        return $product->prices()
+            /*
+            * في حالة استبدال السعر الحالي فقط،
+            * نستثني ذلك السعر من فحص التداخل.
+            */
+            ->when(
+                $excludePriceId !== null,
+                fn ($q) => $q->where('id', '!=', $excludePriceId)
             )
-        )
 
-        /*
-         * شرط:
-         *
-         * new.start < existing.end
-         *
-         * إذا كانت existing.end = NULL
-         * فهذا يعني أن الفترة مفتوحة إلى ∞.
-         */
-        ->where(function ($q) use ($newStart) {
-            $q->whereNull('effective_until')
-                ->orWhere(
-                    'effective_until',
-                    '>',
-                    $newStart
-                );
-        })
+            /*
+            * شرط:
+            *
+            * existing.start < new.end
+            *
+            * إذا كانت newEnd = NULL فهذا يعني ∞،
+            * وبالتالي لا نحتاج لهذا الشرط.
+            */
+            ->when(
+                $newEnd !== null,
+                fn ($q) => $q->where(
+                    'effective_from',
+                    '<',
+                    $newEnd
+                )
+            )
 
-        ->first();
-}
+            /*
+            * شرط:
+            *
+            * new.start < existing.end
+            *
+            * إذا كانت existing.end = NULL
+            * فهذا يعني أن الفترة مفتوحة إلى ∞.
+            */
+            ->where(function ($q) use ($newStart) {
+                $q->whereNull('effective_until')
+                    ->orWhere(
+                        'effective_until',
+                        '>',
+                        $newStart
+                    );
+            })
+
+            ->first();
+    }
     protected function assertValidPeriod(Carbon $from, ?Carbon $until): void
     {
         if ($until && $until->lte($from)) {
